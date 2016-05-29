@@ -1,9 +1,34 @@
 #!/bin/bash
 #set -x
 
-# will add a smaller version of all videos from a given path
-# videos will be searched recursively
-# videos need the file ending .mp4
+# searches for *.mov and *.mp4 (case insensitive) files and creates smaller versions of the file
+# it will
+# * reduce the resolution to 1/3 of the original version
+# * copy the audio stream (on modification)
+# * keep the original video codec
+# * keep the original frame rate
+# * keep the original compression (quality) rate
+#
+# The small version will be placed in the same folder with an _small suffix. Example:
+# VID_20160501_143020.mp4 -> VID_20160501_143020_small.mp4
+#
+# If small version already exists, it will not create a new version (unless --overwrite is given)
+# (--overwrite is not implemented yet)
+#
+# Usage:
+#
+# bash resize_videos.sh ~/Fotos
+#
+# Features:
+#
+# Recorded videos in portrait mode will stay portrait.
+#
+# Warnings:
+#
+# * This script might destroy your videos. Use at your own risc. Only run it when you have backups
+# * only tested with videos which were created by my CANON compact camera and BlackBerry 10
+
+
 
 # sets WDITH and HEIGHT and SIZE
 # return 0 on landscape
@@ -83,6 +108,15 @@ resize_vid () {
     #ffmpeg -n -loglevel error -i "${VIDFILE}" -r 25 -c:a copy -vf scale=$(($WIDTH/2)):-1 "${OUTFILE}"
     # ffmpeg sucks stdin, leading the outer loop to break
     ffmpeg -n -loglevel quiet -i "${VIDFILE}" -c:a copy -vf scale=$(($WIDTH/3)):-1 "${OUTFILE}" < /dev/null
+    ret=$?
+    if [[ $ret -ne 0 ]]; then
+        echo "There was a problem with file ${VIDFILE}. Probably unsupported codec. I will remove the defect output file"
+        if [[ -n "${OUTFILE}" && -f "${OUTFILE}" ]]; then
+            rm "${OUTFILE}"
+        fi
+        return -1
+    fi
+    return 0
 }
 
 print_size () {
@@ -144,12 +178,10 @@ while read -d $'\0' X; do
             TOTAL=$(($TOTAL+1))
         fi
     fi
-done < <(find "${SPATH}" -type f -iname "*.mp4" -print0)
+done < <(find "${SPATH}" \( -type f -iname "*.mp4" -or -iname "*.mov" \) -print0)
 unset X
 unset TMP
 
-toconvert=$(find "${SPATH}" -type f -iname "*.mp4")
-echo "to convert: $toconvert"
 
 while read -d $'\0' VID; do
     is_smallname "${VID}"
@@ -160,13 +192,13 @@ while read -d $'\0' VID; do
             CURRENT=$(($CURRENT+1))
             echo "${CURRENT}/${TOTAL}: $VID to $OUT"
             resize_vid "${VID}"
-            print_size "${VID}" "${OUT}"
+            if [[ $? -eq 0 ]]; then
+                print_size "${VID}" "${OUT}"
+            fi
         else
             echo "File ${OUT} already exists"
         fi
-    else
-        echo "is_smallname for ${VID} returned $ret"
     fi
-done < <(find "${SPATH}" -type f -iname "*.mp4" -print0)
+done < <(find "${SPATH}" -type f \( -iname "*.mp4" -or -iname ".mov" \) -print0)
 
 
