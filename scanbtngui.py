@@ -1,9 +1,48 @@
 #!/bin/python
 # This is a python2 script
 
+import os, sys, datetime, ConfigParser
 from Tkinter import *
 from subprocess import Popen, PIPE
 
+sys.argv.append("todo: device")
+
+class ScanCommand(object):
+    program = "scanimage"
+    device = sys.argv[1]
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    fmt_adf_simplex = ""
+    fmt_adf_duplex = ""
+    format = "jpeg"
+    resolution = "100"
+
+    def __init__(self, config):
+        self.config = config
+
+    def getscancmd(self):
+        if self.config.get("General", "pagemode") == "duplex":
+            source = self.fmt_adf_duplex
+        elif self.config.get("General", "pagemode") == "simplex":
+            source = self.fmt_adf_simplex
+        else:
+            print "Error: mode '%s' not implemented" % self.config.mode
+            source = None
+
+        cmd = [
+            self.program,
+            "--device-name", self.device,
+            "--resolution", self.config.get("General", "resolution"),
+            "--format", self.format,
+        ]
+        if source != None:
+            cmd.append("--source")
+            cmd.append(source)
+
+        return cmd
+
+class BrotherAPC1100(ScanCommand):
+    fmt_adf_simplex = "Automatic Document Feeder(left aligned,Simplex)"
+    fmt_adf_duplex = "Automatic Document Feeder(left aligned,Duplex)"
 
 class ScanGui(Frame):
     def __init__(self, parent):
@@ -25,18 +64,36 @@ class ScanGui(Frame):
             ("Simplex", "simplex"),
         ]
         self.parent = parent
-        self.initLangs()
+        self.initOCR()
         self.initUI()
 
-    def initLangs(self):
+    def initOCR(self):
+
+        self.langs_available = ["ocr not available"]
+
         try:
-            #langs=check_output(["tesseract", "--list-langs"])
+            p=Popen(["which", "ocrmypdf"], stdout=PIPE, stderr=PIPE)
+            out, err = p.communicate()
+        except OSError:
+            print "error checking for ocrmypdf"
+            self.ocravailable = False
+        else:
+            if p.returncode != 0:
+                print "ocrmypdf not found"
+                self.ocravailable = False
+            else:
+                self.ocravailable = True
+
+        if not self.ocravailable:
+            return
+
+        try:
             p=Popen(["tesseract", "--list-langs"], stdout=PIPE, stderr=PIPE)
             out, err=p.communicate()
             # tesseract prints this list into stderr?
             langs=err
         except OSError:
-            self.langs_available = ["ocr not available"]
+            print "could not determine available languages"
         else:
             self.langs_available = langs.strip().split("\n")[1:]
             self.langs_available.insert(0, "no ocr")
@@ -54,9 +111,9 @@ class ScanGui(Frame):
 
         self.resolution = StringVar()
         for i, (text, value) in enumerate(self.RESOLUTIONS):
-            b = Radiobutton(self, text=text, variable=self.resolution, value=value)
+            b = Radiobutton(self, text=text, variable=self.resolution, value=value, command=self.onResolutionChange)
             b.grid(row=i+1, column=0, columnspan=1, rowspan=1, padx=5, sticky=E+W)
-        self.resolution.set("300")
+        self.resolution.set(config.get("General", "resolution"))
 
         lbl = Label(self, text="Colorscale")
         lbl.grid(sticky=E+W, pady=4, padx=5, column=1, row=0)
@@ -64,9 +121,9 @@ class ScanGui(Frame):
         self.color = StringVar()
 
         for i, (text, value) in enumerate(self.COLORS):
-            b = Radiobutton(self, text=text, variable=self.color, value=value)
+            b = Radiobutton(self, text=text, variable=self.color, value=value, command=self.onColorChange)
             b.grid(row=i+1, column=1, columnspan=1, rowspan=1, padx=5, sticky=E+W)
-        self.color.set("rgb")
+        self.color.set(config.get("General", "color"))
 
         lbl = Label(self, text="Mode")
         lbl.grid(sticky=E+W, pady=4, padx=5, column=2, row=0)
@@ -74,9 +131,9 @@ class ScanGui(Frame):
         self.pagemode = StringVar()
 
         for i, (text, value) in enumerate(self.MODES):
-            b = Radiobutton(self, text=text, variable=self.pagemode, value=value)
+            b = Radiobutton(self, text=text, variable=self.pagemode, value=value, command=self.onPagemodeChange)
             b.grid(row=i+1, column=2, columnspan=1, rowspan=1, padx=5, sticky=E+W)
-        self.pagemode.set("duplex")
+        self.pagemode.set(config.get("General", "pagemode"))
 
         lbl = Label(self, text="Ask again (minutes)")
         lbl.grid(sticky=E+W, pady=4, padx=5, column=0, columnspan=2)
@@ -91,29 +148,68 @@ class ScanGui(Frame):
 
         self.ocrlang = StringVar()
         if len(self.langs_available):
-            if "deu" in self.langs_available:
-                self.ocrlang.set("deu")
-            else:
-                self.ocrlang.set(self.langs_available[0])
-        else:
-            self.ocrlang.set("ocr not available")
-        o = OptionMenu(self, self.ocrlang, *self.langs_available)
+            self.ocrlang.set(config.get("OCR", "language"))
+        o = OptionMenu(self, self.ocrlang, *self.langs_available, command=self.onOCRLangChange)
         o.grid(row=6, column=0, sticky=E+W)
 
 
-        cancelbtn = Button(self, text="Cancel")
+        cancelbtn = Button(self, text="Cancel", command=self.cancel)
         cancelbtn.grid(column=0, row=7, sticky=E+W)
 
-        okbtn = Button(self, text="Scan")
+        okbtn = Button(self, text="Scan", command=self.startscan)
         okbtn.grid(column=2, row=7, sticky=E+W)
 
-    def onocrclick(self):
-        print "useocr clicked"
+    def onColorChange(self):
+        config.set("General", "color", self.color.get())
+        self.storeconfig()
+
+    def onPagemodeChange(self):
+        config.set("General", "pagemode", self.pagemode.get())
+        self.storeconfig()
+
+    def onResolutionChange(self):
+        config.set("General", "resolution", self.resolution.get())
+        self.storeconfig()
+
+    def onOCRLangChange(self, language):
+        config.set("OCR", "language", self.ocrlang.get())
+        self.storeconfig()
+
+    def storeconfig(self):
+        with open(configpath, "wb") as configfile:
+            config.write(configfile)
+
+    def startscan(self):
+        print "TODO: start scan"
+        s = BrotherAPC1100(config)
+        print s.getscancmd()
+
+    def cancel(self):
+        exit(0)
+
 
 
 def main():
+    global configpath
+    configpath = os.path.join(os.path.expanduser("~"), ".config", "scanbtngui.ini")
+    global config
+    config = ConfigParser.ConfigParser()
+    if os.path.exists(configpath):
+        config.readfp(open(configpath))
+    else:
+        print "Create default config"
+        config.add_section("General")
+        config.set("General", "pagemode", "duplex")
+        config.set("General", "color", "rgb")
+        config.set("General", "resolution", 300)
+        config.add_section("OCR")
+        config.set("OCR", "language", "no ocr")
+
+        configfile = open(configpath, "wb")
+        config.write(configfile)
+        configfile.close()
+
     top = Tk()
-    #top.geometry("350x300")
     app = ScanGui(top)
     top.mainloop()
 
